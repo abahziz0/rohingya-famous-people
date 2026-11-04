@@ -1,0 +1,14 @@
+{
+  "name": "Rohingya Famous People",
+  "url": "https://people.rohingya.ro",
+  "base": "/",
+  "language": "en",
+  "tagline": "An open archive of Rohingya lives, carved into a wall",
+  "description": "An open archive of famous Rohingya people: leaders, writers, poets, scholars, doctors and public servants. Read what each of them did, with dates, places and sources.",
+  "themeColor": "#DDDCD7",
+  "submissions": {
+    "to": "ab@rohingya.ro",
+    "endpoint": "/api/submit/"
+  },
+  "license": ""
+}

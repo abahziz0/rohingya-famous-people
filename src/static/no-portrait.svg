@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- an empty niche carved into the plaster: shown until a portrait is added -->
+  <defs>
+    <radialGradient id="niche" cx="0.56" cy="0.6" r="0.62">
+      <stop offset="0" stop-color="#E4E3DF"/><stop offset="0.75" stop-color="#D6D5D0"/><stop offset="1" stop-color="#C3C1BA"/>
+    </radialGradient>
+    <filter id="soft"><feGaussianBlur stdDeviation="6"/></filter>
+  </defs>
+  <rect width="1024" height="1024" fill="#DDDCD7"/>
+  <ellipse cx="512" cy="470" rx="236" ry="296" fill="#F2F1ED" filter="url(#soft)" transform="translate(6 10)"/>
+  <ellipse cx="512" cy="470" rx="236" ry="296" fill="#BDBBB4" filter="url(#soft)" transform="translate(-5 -7)"/>
+  <ellipse cx="512" cy="470" rx="232" ry="292" fill="url(#niche)"/>
+</svg>

@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+
+# the compiled relief tool and its scratch files: rebuilt from tools/make-relief.swift
+tools/.bin/
+reliefs/auto/.*.png
+
+# Vercel CLI link, if one is ever made
+.vercel/
+node_modules/
+
+# dist/ IS committed: Vercel serves it exactly as built on the Mac
+# (the relief carving and social cards need macOS tools Vercel does not have)
