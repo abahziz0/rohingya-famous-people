@@ -64,47 +64,95 @@ function tileInner(p) {
     <span class="tile-name"><span class="n-main">${esc(p.name)}</span>${p.sub ? `<span class="n-sub">${esc(p.sub)}</span>` : ''}</span>`;
 }
 
+/* The tiles all sit on one plane, and only the plane moves: one transform a frame,
+   handled by the graphics card, instead of re-placing every tile on every touch. */
+const plane = document.createElement('div');
+plane.className = 'plane';
+wall.appendChild(plane);
 const grain = $('#grain');
-function render() {
+const GRAIN_PERIOD = 700;   /* the coarse plaster mottle repeats every 700px; the fine tooth hides any seam */
+let range = '';
+
+/* put the right tiles on the plane for where the wall now is; cheap when nothing changed */
+function fill() {
   const vw = innerWidth, vh = innerHeight;
-  /* the grain belongs to the wall, so it travels with it */
-  grain.style.backgroundPosition = `${offX}px ${offY}px`;
   const c0 = Math.floor(-offX / TILE) - 1, r0 = Math.floor(-offY / TILE) - 1;
   const c1 = Math.ceil((vw - offX) / TILE) + 1, r1 = Math.ceil((vh - offY) / TILE) + 1;
+  const key = `${c0},${r0},${c1},${r1}`;
+  if (key === range) return;
+  range = key;
   const needed = new Set();
   for (let r = r0; r <= r1; r++) {
     for (let c = c0; c <= c1; c++) {
-      const key = r + ',' + c;
-      needed.add(key);
-      let el = pool.get(key);
-      if (!el) {
-        const i = personAt(r, c), p = people[i];
-        /* a tile is a real link: crawlers follow it, Ctrl/Cmd-click opens a tab,
-           and an ordinary click is caught below and opens her or him in place */
-        el = document.createElement('a');
-        el.className = 'tile';
-        el.href = personURL(p);
-        el.draggable = false;
-        el.style.width = el.style.height = (TILE - SEAM) + 'px';
-        el.dataset.i = i;
-        el.setAttribute('aria-label', p.sub ? `${p.name}, ${p.sub}` : p.name);
-        el.innerHTML = tileInner(p);
-        if (matchState) applyMatch(el);
-        wall.appendChild(el);
-        pool.set(key, el);
-      }
-      el.style.transform = `translate(${c * TILE + offX}px, ${r * TILE + offY}px)`;
+      const k = r + ',' + c;
+      needed.add(k);
+      if (pool.has(k)) continue;
+      const i = personAt(r, c), p = people[i];
+      /* a tile is a real link: crawlers follow it, Ctrl/Cmd-click opens a tab,
+         and an ordinary click is caught below and opens her or him in place */
+      const el = document.createElement('a');
+      el.className = 'tile';
+      el.href = personURL(p);
+      el.draggable = false;
+      el.style.width = el.style.height = (TILE - SEAM) + 'px';
+      el.style.transform = `translate(${c * TILE}px, ${r * TILE}px)`;
+      el.dataset.i = i;
+      el.setAttribute('aria-label', p.sub ? `${p.name}, ${p.sub}` : p.name);
+      el.innerHTML = tileInner(p);
+      if (matchState) applyMatch(el);
+      plane.appendChild(el);
+      pool.set(k, el);
     }
   }
-  for (const [key, el] of pool) if (!needed.has(key)) { el.remove(); pool.delete(key); }
+  for (const [k, el] of pool) if (!needed.has(k)) { el.remove(); pool.delete(k); }
 }
 
-let dragging = false, sx = 0, sy = 0, moved = 0;
+/* move the wall to where it now is, at once */
+function place() {
+  plane.style.transform = `translate3d(${offX}px, ${offY}px, 0)`;
+  /* the grain belongs to the wall, so it travels with it: slid, never repainted */
+  const gx = ((offX % GRAIN_PERIOD) + GRAIN_PERIOD) % GRAIN_PERIOD - GRAIN_PERIOD;
+  const gy = ((offY % GRAIN_PERIOD) + GRAIN_PERIOD) % GRAIN_PERIOD - GRAIN_PERIOD;
+  grain.style.transform = `translate3d(${gx}px, ${gy}px, 0)`;
+  fill();
+}
+/* many pointer events can arrive in one frame; the wall moves once per frame */
+let frame = 0;
+function render() {
+  if (!frame) frame = requestAnimationFrame(() => { frame = 0; place(); });
+}
+
+/* Momentum: let go mid-swipe and the wall glides on, slowing as plaster would under a
+   hand, never stopping dead. A touch while it glides catches it, and is not a tap. */
+let glide = 0;
+const FRICTION = 0.9965;   /* the speed kept per millisecond: a firm flick runs on for about a second */
+function stopGlide() { if (glide) { cancelAnimationFrame(glide); glide = 0; return true; } return false; }
+function startGlide(vx, vy) {
+  stopGlide();
+  const max = 4.5;   /* px per ms: fast, but the wall never flies off out of reach */
+  const sp = Math.hypot(vx, vy);
+  if (sp > max) { vx *= max / sp; vy *= max / sp; }
+  let last = performance.now();
+  const step = now => {
+    const dt = Math.min(40, now - last);
+    last = now;
+    offX += vx * dt; offY += vy * dt;
+    const k = Math.pow(FRICTION, dt);
+    vx *= k; vy *= k;
+    place();
+    glide = Math.hypot(vx, vy) > 0.02 ? requestAnimationFrame(step) : 0;
+  };
+  glide = requestAnimationFrame(step);
+}
+
+let dragging = false, sx = 0, sy = 0, moved = 0, caught = false, trail = [];
 wall.addEventListener('pointerdown', e => {
   /* middle-click and Ctrl/Cmd-click stay with the browser: a new tab */
   if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey) return;
+  caught = stopGlide();
   dragging = true; moved = 0;
   sx = e.clientX; sy = e.clientY;
+  trail = [{ t: e.timeStamp, x: e.clientX, y: e.clientY }];
   wall.classList.add('dragging');
   wall.setPointerCapture(e.pointerId);
 });
@@ -114,16 +162,28 @@ wall.addEventListener('pointermove', e => {
   moved += Math.abs(dx) + Math.abs(dy);
   offX += dx; offY += dy;
   sx = e.clientX; sy = e.clientY;
+  /* the last tenth of a second of movement is what sets the glide */
+  trail.push({ t: e.timeStamp, x: e.clientX, y: e.clientY });
+  while (trail.length > 2 && e.timeStamp - trail[0].t > 100) trail.shift();
   render();
 });
 const endDrag = e => {
   if (!dragging) return;
   dragging = false;
   wall.classList.remove('dragging');
-  if (e.type === 'pointerup' && moved < 6) {
+  const tap = e.type === 'pointerup' && moved < (e.pointerType === 'touch' ? 10 : 6);
+  if (tap && !caught) {
     /* pointer capture retargets the event to the wall, so find the tile under the cursor */
     const tile = document.elementFromPoint(e.clientX, e.clientY)?.closest('.tile');
     if (tile) openPerson(+tile.dataset.i, tile);
+    return;
+  }
+  const first = trail[0], last = trail[trail.length - 1];
+  const dt = last && first ? last.t - first.t : 0;
+  /* a finger that came to rest before lifting means: stay here */
+  if (e.type === 'pointerup' && dt > 0 && e.timeStamp - last.t < 60) {
+    const vx = (last.x - first.x) / dt, vy = (last.y - first.y) / dt;
+    if (Math.hypot(vx, vy) > 0.12) startGlide(vx, vy);
   }
 };
 wall.addEventListener('pointerup', endDrag);
@@ -148,8 +208,10 @@ wall.addEventListener('pointerover', e => {
   if (tile && !dragging) loadProfile(people[+tile.dataset.i].slug).catch(() => {});
 });
 
+/* a trackpad brings its own momentum, so the wheel moves the wall as it is told */
 addEventListener('wheel', e => {
-  if (panel.contains(e.target) || focusEl.classList.contains('show')) return;
+  if (panel.contains(e.target) || focusEl.classList.contains('show') || !lb.hidden) return;
+  stopGlide();
   offX -= e.deltaX; offY -= e.deltaY;
   render();
 }, { passive: true });
@@ -209,18 +271,20 @@ const focusCap = focusEl.querySelector('figcaption');
 let focusI = page.slug ? bySlug(page.slug) : null;
 
 function panWall(dx, dy) {
+  stopGlide();
   const x0 = offX, y0 = offY, t0 = performance.now();
   (function step(t) {
     const k = Math.min(1, (t - t0) / 1250);
     /* starts soft, lands softer */
     const e = k < 0.4 ? 2.5 * k * k * 0.625 : 1 - Math.pow(1 - k, 2.6);
     offX = x0 + dx * e; offY = y0 + dy * e;
-    render();
+    place();
     if (k < 1) requestAnimationFrame(step);
   })(t0);
 }
 
 function openFocus(i, tileEl) {
+  clearTimeout(focusRest);   /* a portrait still gliding home is called straight back */
   const p = people[i], f = p.fit;
   focusI = i;
   focusImg.src = p.img;
@@ -255,8 +319,30 @@ function openFocus(i, tileEl) {
   }
 }
 
+let focusRest = 0;
+const onScreen = t => { const r = t.getBoundingClientRect(); return r.right > 0 && r.left < innerWidth && r.bottom > 0 && r.top < innerHeight; };
 function closeFocus() {
+  const i = focusI;
   veil.classList.remove('show');
+  /* Stepping back from the wall: the portrait glides down onto its own tile and
+     sinks into it, as it came. With no tile in view it simply fades. */
+  if (focusEl.classList.contains('show') && i !== null && !still.matches) {
+    const tile = [...pool.values()].find(t => +t.dataset.i === i && onScreen(t));
+    if (tile) {
+      const r = tile.getBoundingClientRect(), box = focusEl.getBoundingClientRect();
+      const dx = r.left + r.width / 2 - (box.left + box.width / 2), dy = r.top + r.height / 2 - (box.top + box.height / 2);
+      focusEl.style.transition = 'transform 1.05s cubic-bezier(0.3,0.9,0.25,1), opacity 0.7s ease 0.35s';
+      focusEl.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px)) scale(${r.width / focusEl.offsetWidth})`;
+      focusEl.style.opacity = '0';
+      clearTimeout(focusRest);
+      focusRest = setTimeout(() => {
+        focusEl.style.transition = 'none';
+        focusEl.style.transform = ''; focusEl.style.opacity = '';
+        focusEl.getBoundingClientRect();
+        focusEl.style.transition = '';
+      }, 1150);
+    }
+  }
   focusEl.classList.remove('show');
   focusI = null;
 }
@@ -274,6 +360,36 @@ function openPanel(mode, label) {
   panel.classList.toggle('ask', mode === 'search');
   panel.classList.add('open');
 }
+/* ── Settling: what comes into the sheet surfaces gently ── */
+/* Each block rises a few pixels and comes up out of the plaster as it enters view:
+   all at once when a life opens (one after another), or as the reader scrolls down to it. */
+const still = matchMedia('(prefers-reduced-motion: reduce)');
+let settler = null;
+function settle(nodes, delay = 0) {
+  if (still.matches || !('IntersectionObserver' in window)) return;
+  settler ||= new IntersectionObserver(entries => {
+    const arriving = entries.filter(en => en.isIntersecting).sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+    arriving.forEach((en, k) => {
+      const el = en.target;
+      settler.unobserve(el);
+      const wait = (el.settleDelay || 0) + Math.min(k, 9) * 60;
+      el.style.transitionDelay = wait + 'ms';
+      el.classList.add('in');
+      setTimeout(() => { el.classList.remove('settle', 'in'); el.style.transitionDelay = ''; }, wait + 1000);
+    });
+  }, { root: panelBody, rootMargin: '0px 0px -3% 0px', threshold: 0.01 });
+  for (const el of nodes) {
+    if (!el || el.hidden) continue;
+    el.settleDelay = delay;
+    el.classList.add('settle');
+    settler.observe(el);
+  }
+}
+function settleProfile(delay) {
+  const blocks = [...profileEl.children].filter(el => !el.matches('.tl, .r-photos, .r-correct'));
+  settle([...blocks, ...profileEl.querySelectorAll('.tl-item, .print')], delay);
+}
+
 function closePanel() {
   panel.classList.remove('open', 'tall');
   clearMatch();
@@ -352,13 +468,20 @@ function loadProfile(slug) {
 async function openProfile(i, push = true) {
   const p = people[i];
   if (push) goPerson(p);
+  /* already reading a life: it fades away first, and the next one settles in its place */
+  const wasOpen = panel.classList.contains('open');
+  const swapping = wasOpen && profileEl.classList.contains('active') && profileEl.childElementCount && !still.matches;
+  if (swapping) profileEl.classList.add('leaving');
   let html;
-  try { html = await loadProfile(p.slug); }
+  try { [html] = await Promise.all([loadProfile(p.slug), swapping ? sleep(200) : null]); }
   catch { location.href = personURL(p); return; }   /* offline cache miss: just go there */
   profileEl.innerHTML = html;
+  profileEl.classList.remove('leaving');
   openPanel('profile', UI.fromWall);
   /* every mode shares the scroll; a new life starts at the top */
   panelBody.scrollTop = 0;
+  /* a sheet still sliding in is let arrive a little before its words surface */
+  settleProfile(wasOpen ? 0 : 220);
 }
 
 function openPerson(i, tileEl) {
@@ -384,9 +507,27 @@ profileEl.addEventListener('click', e => {
   const b = e.target.closest('[data-story]');
   if (!b) return;
   const story = profileEl.querySelector('.r-story');
-  const open = story.classList.toggle('open');
-  b.textContent = open ? b.dataset.close : b.dataset.open;
-  if (!open) story.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const opening = !story.classList.contains('open');
+  b.textContent = opening ? b.dataset.close : b.dataset.open;
+  if (still.matches) {
+    story.classList.toggle('open', opening);
+    if (!opening) story.scrollIntoView({ block: 'start' });
+    return;
+  }
+  /* "none" cannot be animated to, so the story grows to its measured height, then lets go
+     (a timer, not transitionend: a fold that follows would otherwise trip a stale listener) */
+  clearTimeout(story.unfolding);
+  if (opening) {
+    story.style.maxHeight = story.scrollHeight + 'px';
+    story.classList.add('open');
+    story.unfolding = setTimeout(() => { story.style.maxHeight = 'none'; }, 1150);
+  } else {
+    story.style.maxHeight = story.scrollHeight + 'px';
+    story.getBoundingClientRect();   /* start the fold from the full height */
+    story.classList.remove('open');
+    story.style.maxHeight = '';
+    story.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 });
 
 /* ── Photographs: a print, enlarged ───────────────────── */
@@ -963,11 +1104,17 @@ function speaker(who) {
   return label;
 }
 /* the keeper's name is engraved once, when that voice first speaks, not after every question */
+/* new lines of the conversation settle in like everything else in the sheet */
+function addToLog(html) {
+  const before = convLog.childElementCount;
+  convLog.insertAdjacentHTML('beforeend', html);
+  settle([...convLog.children].slice(before));
+}
 function youSay(text) {
-  convLog.insertAdjacentHTML('beforeend', `<div class="msg you">${esc(text)}</div>`);
+  addToLog(`<div class="msg you">${esc(text)}</div>`);
 }
 function keeperSays(inner) {
-  convLog.insertAdjacentHTML('beforeend', `<div class="msg her">${speaker('keeper')}<span class="surf">${inner}</span></div>`);
+  addToLog(`<div class="msg her">${speaker('keeper')}<span class="surf">${inner}</span></div>`);
   scrollLog();
 }
 
@@ -985,7 +1132,7 @@ function answer(q, slugs, stems, lead, split, lead2) {
   const found = slugs.map(s => people[bySlug(s)]).filter(Boolean);
   if (!found.length) {
     keeperSays(esc(UI.notFound));
-    convLog.insertAdjacentHTML('beforeend', `<button class="btn-talk in-chat nom-chat">${UI.nominate}</button>`);
+    addToLog(`<button class="btn-talk in-chat nom-chat">${UI.nominate}</button>`);
     return;
   }
   const cards = list => list.map(p => {
@@ -995,11 +1142,11 @@ function answer(q, slugs, stems, lead, split, lead2) {
   const first = split ? found.slice(0, split) : found;
   const more = split ? found.slice(split) : [];
   keeperSays(esc(lead || UI.found(first.length)).replace(/\n/g, '<br>'));
-  convLog.insertAdjacentHTML('beforeend', cards(first.slice(0, 10)));
+  addToLog(cards(first.slice(0, 10)));
   if (first.length > 10) keeperSays(esc(UI.more(first.length - 10)));
   if (more.length) {
     keeperSays(esc(lead2));
-    convLog.insertAdjacentHTML('beforeend', cards(more.slice(0, 6)));
+    addToLog(cards(more.slice(0, 6)));
     if (more.length > 6) keeperSays(esc(UI.more(more.length - 6)));
   }
 }
@@ -1160,6 +1307,7 @@ function openNominate() {
   goHome();
   $('#nom-thanks').hidden = true;
   openPanel('nominate', UI.nominate);
+  settle([...document.querySelectorAll('#mode-nominate > .msg.tip, #nom-form > :not(.hp)')], 160);
   formOpened.set(nomForm, Date.now());
   panelBody.scrollTop = 0;
   setTimeout(() => $('#nom-name').focus(), 750);
@@ -1280,11 +1428,12 @@ function onResize() {
     pool.clear();
     resizeSun?.();
   }
-  render();
+  range = '';
+  place();
 }
 
 document.querySelector('.wall-static')?.remove();
-render();
+place();
 addEventListener('resize', onResize);
 /* a life opened fresh is read from its first line, whatever the browser remembers */
 if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
